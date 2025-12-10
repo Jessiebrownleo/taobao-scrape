@@ -1,0 +1,22 @@
+{
+    "name": "taobao-scraper",
+    "version": "1.0.0",
+    "description": "Puppeteer-based web scraper for Taobao products",
+    "main": "taobao-scraper.js",
+    "scripts": {
+        "start": "node taobao-scraper.js",
+        "scrape": "node taobao-scraper.js",
+        "login": "node taobao-scraper.js --login-only"
+    },
+    "keywords": [
+        "puppeteer",
+        "scraper",
+        "taobao",
+        "web-scraping"
+    ],
+    "author": "",
+    "license": "MIT",
+    "dependencies": {
+        "puppeteer": "^21.6.1"
+    }
+}
