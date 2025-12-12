@@ -17,21 +17,26 @@ const CONFIG = {
     searchDelay: 3000,
     pageLoadDelay: 5000,
     paginationDelay: 4000,
-    detailPageDelay: 3000, // NEW: Delay for detail pages
+    detailPageDelay: 3000,
     screenshotOnError: true,
-    scrapeDetailPages: true, // NEW: Enable/disable detail scraping
-    maxDetailPageRetries: 2, // NEW: Retries for failed detail pages
-    detailPageTimeout: 20000, // NEW: Timeout for detail pages
-    batchDetailScraping: true, // NEW: Scrape details in batches
-    detailBatchSize: 10, // NEW: How many details to scrape before saving progress
+    scrapeDetailPages: true,
+    maxDetailPageRetries: 2,
+    detailPageTimeout: 20000,
+    batchDetailScraping: true,
+    detailBatchSize: 10,
+
+    // Improved login configuration
     loginCredentials: {
         username: 'kaizenguru',
         password: 'Qwerty@2001'
     },
-    loginTimeout: 60000,
+    loginTimeout: 90000,
     maxLoginAttempts: 3,
     retryAttempts: 3,
-    retryDelay: 2000
+    retryDelay: 2000,
+    autoLoginEnabled: true,
+    manualLoginFallback: true,
+    qrCodeLoginPreferred: false
 };
 
 // Search keywords
@@ -64,6 +69,7 @@ const stealthConfig = {
         '--disable-features=IsolateOrigins,site-per-process',
         '--window-size=1920,1080',
         '--disable-infobars',
+        '--lang=zh-CN',
         '--user-agent=Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/120.0.0.0 Safari/537.36'
     ],
     ignoreDefaultArgs: ['--enable-automation', '--enable-blink-features=AutomationControlled'],
@@ -102,13 +108,312 @@ async function saveCookies(page) {
     console.log(`💾 Saved ${cookies.length} cookies`);
 }
 
-// Login function
-async function performLogin(page) {
-    console.log('\n🔐 PERFORMING LOGIN');
+// Check if already logged in
+async function isLoggedIn(page) {
+    try {
+        await page.goto('https://www.taobao.com', {
+            waitUntil: 'networkidle2',
+            timeout: 30000
+        });
+
+        await new Promise(resolve => setTimeout(resolve, 2000));
+
+        const loginStatus = await page.evaluate(() => {
+            const userElements = [
+                '.site-nav-login-info-nick',
+                '.site-nav-user',
+                '[data-spm="754894437"]',
+                'a[href*="member1.taobao.com"]'
+            ];
+
+            for (const selector of userElements) {
+                const elem = document.querySelector(selector);
+                if (elem && elem.textContent.trim().length > 0) {
+                    return { loggedIn: true, username: elem.textContent.trim() };
+                }
+            }
+
+            const loginButton = document.querySelector('a[href*="login"]');
+            if (loginButton && loginButton.textContent.includes('登录')) {
+                return { loggedIn: false };
+            }
+
+            return { loggedIn: false };
+        });
+
+        if (loginStatus.loggedIn) {
+            console.log(`✅ Already logged in as: ${loginStatus.username}`);
+            return true;
+        }
+
+        return false;
+
+    } catch (error) {
+        console.log(`⚠️  Error checking login status: ${error.message}`);
+        return false;
+    }
+}
+
+// Try password login
+async function tryPasswordLogin(page) {
+    try {
+        const hasPasswordForm = await page.evaluate(() => {
+            const switchButton = document.querySelector('.login-switch') ||
+                document.querySelector('[class*="password"]') ||
+                document.querySelector('a[href*="password"]');
+            return !!switchButton;
+        });
+
+        if (!hasPasswordForm) {
+            console.log('   ⚠️  Password login form not found');
+            return false;
+        }
+
+        await page.evaluate(() => {
+            const switchButton = document.querySelector('.login-switch') ||
+                document.querySelector('[class*="password"]');
+            if (switchButton) switchButton.click();
+        });
+
+        await new Promise(resolve => setTimeout(resolve, 2000));
+
+        const usernameSelectors = [
+            'input[name="fm-login-id"]',
+            'input[id="fm-login-id"]',
+            'input[name="TPL_username"]',
+            'input[placeholder*="手机号"]',
+            'input[placeholder*="会员名"]',
+            'input[type="text"]'
+        ];
+
+        let usernameInput = null;
+        for (const selector of usernameSelectors) {
+            usernameInput = await page.$(selector);
+            if (usernameInput) {
+                console.log(`   ✓ Found username input: ${selector}`);
+                break;
+            }
+        }
+
+        if (!usernameInput) {
+            console.log('   ❌ Username input not found');
+            return false;
+        }
+
+        const passwordSelectors = [
+            'input[name="fm-password"]',
+            'input[id="fm-password"]',
+            'input[name="TPL_password"]',
+            'input[type="password"]',
+            'input[placeholder*="密码"]'
+        ];
+
+        let passwordInput = null;
+        for (const selector of passwordSelectors) {
+            passwordInput = await page.$(selector);
+            if (passwordInput) {
+                console.log(`   ✓ Found password input: ${selector}`);
+                break;
+            }
+        }
+
+        if (!passwordInput) {
+            console.log('   ❌ Password input not found');
+            return false;
+        }
+
+        console.log('   ⌨️  Entering credentials...');
+        await usernameInput.click({ clickCount: 3 });
+        await usernameInput.press('Backspace');
+        await usernameInput.type(CONFIG.loginCredentials.username, { delay: 100 });
+
+        await new Promise(resolve => setTimeout(resolve, 500));
+
+        await passwordInput.click({ clickCount: 3 });
+        await passwordInput.press('Backspace');
+        await passwordInput.type(CONFIG.loginCredentials.password, { delay: 100 });
+
+        await new Promise(resolve => setTimeout(resolve, 1000));
+
+        const submitSelectors = [
+            'button[type="submit"]',
+            'button.fm-button',
+            'button[class*="submit"]',
+            '.fm-submit',
+            'input[type="submit"]'
+        ];
+
+        let submitButton = null;
+        for (const selector of submitSelectors) {
+            submitButton = await page.$(selector);
+            if (submitButton) {
+                console.log(`   ✓ Found submit button: ${selector}`);
+                break;
+            }
+        }
+
+        if (!submitButton) {
+            console.log('   ❌ Submit button not found');
+            return false;
+        }
+
+        console.log('   🖱️  Clicking submit...');
+        await submitButton.click();
+
+        await new Promise(resolve => setTimeout(resolve, 3000));
+
+        const needsVerification = await page.evaluate(() => {
+            const verificationElements = [
+                '[class*="verification"]',
+                '[class*="captcha"]',
+                '[class*="verify"]',
+                '.nc-container'
+            ];
+
+            for (const selector of verificationElements) {
+                if (document.querySelector(selector)) return true;
+            }
+            return false;
+        });
+
+        if (needsVerification) {
+            console.log('   ⚠️  Verification required - please complete manually');
+            return await waitForManualLogin(page, 30000);
+        }
+
+        const url = page.url();
+        if (!url.includes('login') && !url.includes('verify')) {
+            console.log('   ✅ Password login successful!');
+            return true;
+        }
+
+        const errorMessage = await page.evaluate(() => {
+            const errorSelectors = [
+                '.error-msg',
+                '.fm-error',
+                '[class*="error"]'
+            ];
+
+            for (const selector of errorSelectors) {
+                const elem = document.querySelector(selector);
+                if (elem && elem.textContent.trim().length > 0) {
+                    return elem.textContent.trim();
+                }
+            }
+            return null;
+        });
+
+        if (errorMessage) {
+            console.log(`   ❌ Login error: ${errorMessage}`);
+        }
+
+        return false;
+
+    } catch (error) {
+        console.log(`   ❌ Password login error: ${error.message}`);
+        return false;
+    }
+}
+
+// Try QR code login
+async function tryQRCodeLogin(page) {
+    try {
+        console.log('   📱 Checking for QR code...');
+
+        const hasQRSwitch = await page.evaluate(() => {
+            const qrButton = document.querySelector('.login-switch') ||
+                document.querySelector('[class*="qrcode"]');
+            if (qrButton) {
+                qrButton.click();
+                return true;
+            }
+            return false;
+        });
+
+        if (hasQRSwitch) {
+            await new Promise(resolve => setTimeout(resolve, 2000));
+        }
+
+        const hasQRCode = await page.evaluate(() => {
+            const qrSelectors = [
+                '.qrcode-img img',
+                '[class*="qr"] img',
+                'img[src*="qrcode"]',
+                '.login-qrcode img'
+            ];
+
+            for (const selector of qrSelectors) {
+                const qrImg = document.querySelector(selector);
+                if (qrImg && qrImg.src) return true;
+            }
+            return false;
+        });
+
+        if (!hasQRCode) {
+            console.log('   ❌ QR code not found');
+            return false;
+        }
+
+        console.log('   ✅ QR code displayed');
+        console.log('   📱 Please scan with Taobao mobile app...');
+        console.log('   ⏳ Waiting up to 60 seconds...\n');
+
+        const startTime = Date.now();
+        while (Date.now() - startTime < 60000) {
+            await new Promise(resolve => setTimeout(resolve, 2000));
+
+            const url = page.url();
+            if (!url.includes('login') && !url.includes('verify')) {
+                console.log('   ✅ QR code scanned successfully!');
+                return true;
+            }
+
+            const qrExpired = await page.evaluate(() => {
+                const expiredText = document.querySelector('[class*="expired"]') ||
+                    document.querySelector('[class*="timeout"]');
+                return !!expiredText;
+            });
+
+            if (qrExpired) {
+                console.log('   ⚠️  QR code expired');
+                return false;
+            }
+        }
+
+        console.log('   ⏰ QR code scan timeout');
+        return false;
+
+    } catch (error) {
+        console.log(`   ❌ QR code login error: ${error.message}`);
+        return false;
+    }
+}
+
+// Wait for manual login
+async function waitForManualLogin(page, timeout = 60000) {
+    console.log('   👤 Manual login required');
+    console.log(`   ⏳ Waiting up to ${timeout/1000} seconds...\n`);
+
+    const startTime = Date.now();
+    while (Date.now() - startTime < timeout) {
+        await new Promise(resolve => setTimeout(resolve, 2000));
+
+        const url = page.url();
+        if (!url.includes('login') && !url.includes('verify') && !url.includes('sec.taobao.com')) {
+            return true;
+        }
+    }
+
+    return false;
+}
+
+// Auto-login with multiple strategies
+async function performAutoLogin(page, attempt = 1) {
+    console.log(`\n🔐 AUTO-LOGIN ATTEMPT ${attempt}/${CONFIG.maxLoginAttempts}`);
     console.log('='.repeat(60));
 
     try {
-        console.log('📍 Navigating to Taobao login page...');
+        console.log('📍 Navigating to login page...');
         await page.goto('https://login.taobao.com/member/login.jhtml', {
             waitUntil: 'networkidle2',
             timeout: CONFIG.loginTimeout
@@ -123,25 +428,61 @@ async function performLogin(page) {
             return true;
         }
 
-        console.log('📝 Manual login required - please complete in browser');
-        console.log('⏳ Waiting up to 60 seconds for manual login...\n');
+        if (CONFIG.autoLoginEnabled && !CONFIG.qrCodeLoginPreferred) {
+            console.log('🔑 Attempting password login...');
 
-        const waitStart = Date.now();
-        while (Date.now() - waitStart < 60000) {
-            await new Promise(resolve => setTimeout(resolve, 2000));
-            const url = page.url();
-            if (!url.includes('login') && !url.includes('verify') && !url.includes('sec.taobao.com')) {
-                console.log('✅ Login completed!');
+            const passwordLoginSuccess = await tryPasswordLogin(page);
+            if (passwordLoginSuccess) {
+                console.log('✅ Password login successful!');
+                await saveCookies(page);
+                return true;
+            }
+
+            console.log('⚠️  Password login failed or unavailable');
+        }
+
+        if (CONFIG.qrCodeLoginPreferred || attempt > 1) {
+            console.log('📱 Attempting QR code login...');
+
+            const qrLoginSuccess = await tryQRCodeLogin(page);
+            if (qrLoginSuccess) {
+                console.log('✅ QR code login successful!');
+                await saveCookies(page);
+                return true;
+            }
+
+            console.log('⚠️  QR code login failed or timed out');
+        }
+
+        if (CONFIG.manualLoginFallback) {
+            console.log('👤 Falling back to manual login...');
+
+            const manualLoginSuccess = await waitForManualLogin(page);
+            if (manualLoginSuccess) {
+                console.log('✅ Manual login successful!');
                 await saveCookies(page);
                 return true;
             }
         }
 
-        console.log('❌ Login timeout');
+        if (attempt < CONFIG.maxLoginAttempts) {
+            console.log(`🔄 Retrying login (${attempt + 1}/${CONFIG.maxLoginAttempts})...`);
+            await new Promise(resolve => setTimeout(resolve, CONFIG.retryDelay));
+            return await performAutoLogin(page, attempt + 1);
+        }
+
+        console.log('❌ All login attempts failed');
         return false;
 
     } catch (error) {
         console.error('❌ Login error:', error.message);
+
+        if (attempt < CONFIG.maxLoginAttempts) {
+            console.log(`🔄 Retrying after error (${attempt + 1}/${CONFIG.maxLoginAttempts})...`);
+            await new Promise(resolve => setTimeout(resolve, CONFIG.retryDelay));
+            return await performAutoLogin(page, attempt + 1);
+        }
+
         return false;
     }
 }
@@ -158,6 +499,7 @@ async function setupPage(page) {
         Object.defineProperty(navigator, 'plugins', { get: () => [1, 2, 3, 4, 5] });
         Object.defineProperty(navigator, 'languages', { get: () => ['zh-CN', 'zh', 'en-US', 'en'] });
         window.chrome = { runtime: {} };
+        delete navigator.__proto__.webdriver;
     });
 
     await page.setExtraHTTPHeaders({
@@ -170,10 +512,8 @@ async function setupPage(page) {
 async function waitForProducts(page, timeout = 10000) {
     console.log('   ⏳ Waiting for products to load...');
     const startTime = Date.now();
-    let attempts = 0;
 
     while (Date.now() - startTime < timeout) {
-        attempts++;
         const productCount = await page.evaluate(() => {
             const selectors = [
                 'a[href*="item.taobao.com"][href*="id="]',
@@ -245,8 +585,8 @@ async function extractProducts(page, searchInfo = {}, pageNum = 1) {
             if (!url) return false;
             const hasValidDomain = url.includes('item.taobao.com') || url.includes('detail.tmall.com');
             const hasItemId = /[?&]id=\d+/.test(url);
-            const excludePatterns = ['shop/view_shop', 'store.taobao', 'my_itaobao', 'cart.taobao', 
-                                     'login.taobao', 'pc.taobao', 'pages.tmall', 'click.simba'];
+            const excludePatterns = ['shop/view_shop', 'store.taobao', 'my_itaobao', 'cart.taobao',
+                'login.taobao', 'pc.taobao', 'pages.tmall', 'click.simba'];
             const isExcluded = excludePatterns.some(p => url.includes(p));
             return hasValidDomain && hasItemId && !isExcluded;
         }
@@ -262,17 +602,16 @@ async function extractProducts(page, searchInfo = {}, pageNum = 1) {
                 seen.add(itemId);
 
                 const container = item.closest('[class*="item"]') || item.closest('[class*="Item"]') ||
-                                item.closest('[class*="card"]') || item.closest('[class*="Card"]') ||
-                                item.closest('div[data-itemid]') || item.parentElement;
+                    item.closest('[class*="card"]') || item.closest('[class*="Card"]') ||
+                    item.closest('div[data-itemid]') || item.parentElement;
 
                 const allText = (item.textContent || '') + ' ' + (container?.textContent || '');
 
-                // Extract price
                 let price = null;
                 if (container) {
                     const priceElement = container.querySelector('[class*="price"]') ||
-                                       container.querySelector('[class*="Price"]') ||
-                                       container.querySelector('strong');
+                        container.querySelector('[class*="Price"]') ||
+                        container.querySelector('strong');
                     if (priceElement) {
                         const priceMatch = priceElement.textContent.match(/[\d,]+(\.\d+)?/);
                         if (priceMatch) price = priceMatch[0].replace(/,/g, '');
@@ -284,12 +623,11 @@ async function extractProducts(page, searchInfo = {}, pageNum = 1) {
                 }
                 if (!price) continue;
 
-                // Extract title
                 let title = '';
                 const titleElement = item.querySelector('[class*="title"]') ||
-                                   item.querySelector('[class*="Title"]') ||
-                                   container?.querySelector('[class*="title"]') ||
-                                   item.querySelector('h3') || item.querySelector('h4');
+                    item.querySelector('[class*="Title"]') ||
+                    container?.querySelector('[class*="title"]') ||
+                    item.querySelector('h3') || item.querySelector('h4');
 
                 if (titleElement) {
                     title = titleElement.textContent?.trim();
@@ -303,7 +641,6 @@ async function extractProducts(page, searchInfo = {}, pageNum = 1) {
                 }
                 if (!title || title.length < 3) continue;
 
-                // Extract image
                 let image = 'N/A';
                 if (img) {
                     image = img.src || img.dataset.src || img.getAttribute('data-lazy-src') || 'N/A';
@@ -341,7 +678,7 @@ async function extractProducts(page, searchInfo = {}, pageNum = 1) {
                     searchKeyword: searchNameParam,
                     categoryId: catId,
                     extractedAt: new Date().toISOString(),
-                    detailsScraped: false, // NEW: Track if details were scraped
+                    detailsScraped: false,
                     ...additionalData
                 });
 
@@ -356,34 +693,30 @@ async function extractProducts(page, searchInfo = {}, pageNum = 1) {
     return products;
 }
 
-// NEW: Scrape product detail page
+// Scrape product detail page
 async function scrapeProductDetail(page, product, retryCount = 0) {
     const productUrl = product.link;
     const itemId = product.itemId;
-    
+
     try {
         console.log(`      🔍 Scraping details for item ${itemId}...`);
-        
-        // Navigate to product page
+
         await page.goto(productUrl, {
             waitUntil: 'domcontentloaded',
             timeout: CONFIG.detailPageTimeout
         });
-        
+
         await new Promise(resolve => setTimeout(resolve, CONFIG.detailPageDelay));
-        
-        // Check if redirected to login
+
         const currentUrl = page.url();
         if (currentUrl.includes('login') || currentUrl.includes('verify')) {
             console.log(`      ⚠️  Login required for item ${itemId}, skipping...`);
             return null;
         }
-        
-        // Extract detailed information
+
         const details = await page.evaluate(() => {
             const result = {};
-            
-            // Full Description
+
             const descSelectors = [
                 '.tb-detail-hd',
                 '.item-desc',
@@ -393,7 +726,7 @@ async function scrapeProductDetail(page, product, retryCount = 0) {
                 '#description',
                 '.attributes-list'
             ];
-            
+
             for (const selector of descSelectors) {
                 const elem = document.querySelector(selector);
                 if (elem && elem.textContent.trim().length > 10) {
@@ -401,11 +734,10 @@ async function scrapeProductDetail(page, product, retryCount = 0) {
                     break;
                 }
             }
-            
-            // Specifications / Attributes
+
             const specs = {};
             const specContainers = document.querySelectorAll('.attributes-list li, .tb-property-type, [class*="property"], [class*="spec"]');
-            
+
             specContainers.forEach(item => {
                 const text = item.textContent.trim();
                 const parts = text.split(/[:：]/);
@@ -417,12 +749,11 @@ async function scrapeProductDetail(page, product, retryCount = 0) {
                     }
                 }
             });
-            
+
             if (Object.keys(specs).length > 0) {
                 result.specifications = specs;
             }
-            
-            // Brand
+
             const brandSelectors = ['.tb-brand', '[class*="brand"]', '[data-spm*="brand"]'];
             for (const selector of brandSelectors) {
                 const elem = document.querySelector(selector);
@@ -434,8 +765,7 @@ async function scrapeProductDetail(page, product, retryCount = 0) {
                     }
                 }
             }
-            
-            // Additional Images
+
             const images = [];
             const imgSelectors = document.querySelectorAll('#J_UlThumb img, .tb-thumb img, [class*="thumb"] img');
             imgSelectors.forEach(img => {
@@ -445,19 +775,18 @@ async function scrapeProductDetail(page, product, retryCount = 0) {
                     images.push(src);
                 }
             });
-            
+
             if (images.length > 0) {
-                result.additionalImages = images.slice(0, 10); // Limit to 10 images
+                result.additionalImages = images.slice(0, 10);
             }
-            
-            // Reviews Count
+
             const reviewsSelectors = [
                 '[class*="rate-count"]',
                 '[class*="reviewCount"]',
                 '.tb-rate-counter',
                 '[data-spm*="reviews"]'
             ];
-            
+
             for (const selector of reviewsSelectors) {
                 const elem = document.querySelector(selector);
                 if (elem) {
@@ -469,14 +798,13 @@ async function scrapeProductDetail(page, product, retryCount = 0) {
                     }
                 }
             }
-            
-            // Rating
+
             const ratingSelectors = [
                 '.tb-rate-star',
                 '[class*="rating"]',
                 '[class*="score"]'
             ];
-            
+
             for (const selector of ratingSelectors) {
                 const elem = document.querySelector(selector);
                 if (elem) {
@@ -488,14 +816,13 @@ async function scrapeProductDetail(page, product, retryCount = 0) {
                     }
                 }
             }
-            
-            // Stock Status
+
             const stockSelectors = [
                 '.tb-amount',
                 '[class*="stock"]',
                 '[class*="quantity"]'
             ];
-            
+
             for (const selector of stockSelectors) {
                 const elem = document.querySelector(selector);
                 if (elem) {
@@ -508,14 +835,13 @@ async function scrapeProductDetail(page, product, retryCount = 0) {
                     break;
                 }
             }
-            
-            // Shipping Info
+
             const shippingSelectors = [
                 '.tb-shipping',
                 '[class*="delivery"]',
                 '[class*="shipping"]'
             ];
-            
+
             for (const selector of shippingSelectors) {
                 const elem = document.querySelector(selector);
                 if (elem) {
@@ -526,34 +852,33 @@ async function scrapeProductDetail(page, product, retryCount = 0) {
                     }
                 }
             }
-            
-            // SKU Options (sizes, colors, etc.)
+
             const skuOptions = {};
             const skuContainers = document.querySelectorAll('.tb-sku, [class*="sku-item"], [class*="property-item"]');
-            
+
             skuContainers.forEach(container => {
                 const labelElem = container.querySelector('[class*="label"], dt, .tb-property-type');
                 const valuesElems = container.querySelectorAll('[class*="value"], dd, li');
-                
+
                 if (labelElem && valuesElems.length > 0) {
                     const label = labelElem.textContent.trim();
                     const values = Array.from(valuesElems)
                         .map(v => v.textContent.trim())
                         .filter(v => v.length > 0 && v.length < 100);
-                    
+
                     if (label.length > 0 && values.length > 0) {
-                        skuOptions[label] = values.slice(0, 20); // Limit to 20 options
+                        skuOptions[label] = values.slice(0, 20);
                     }
                 }
             });
-            
+
             if (Object.keys(skuOptions).length > 0) {
                 result.skuOptions = skuOptions;
             }
-            
+
             return result;
         });
-        
+
         if (Object.keys(details).length > 0) {
             console.log(`      ✅ Successfully scraped details for item ${itemId}`);
             return details;
@@ -561,41 +886,40 @@ async function scrapeProductDetail(page, product, retryCount = 0) {
             console.log(`      ⚠️  No details found for item ${itemId}`);
             return null;
         }
-        
+
     } catch (error) {
         console.log(`      ❌ Error scraping details for item ${itemId}: ${error.message}`);
-        
-        // Retry logic
+
         if (retryCount < CONFIG.maxDetailPageRetries) {
             console.log(`      🔄 Retrying (${retryCount + 1}/${CONFIG.maxDetailPageRetries})...`);
             await new Promise(resolve => setTimeout(resolve, CONFIG.retryDelay));
             return await scrapeProductDetail(page, product, retryCount + 1);
         }
-        
+
         return null;
     }
 }
 
-// NEW: Scrape details for multiple products
+// Scrape details for multiple products
 async function scrapeProductDetails(page, products) {
     console.log(`\n${'='.repeat(60)}`);
     console.log(`📝 SCRAPING PRODUCT DETAILS`);
     console.log(`${'='.repeat(60)}\n`);
     console.log(`📊 Total products to scrape: ${products.length}`);
     console.log(`⚙️  Batch size: ${CONFIG.detailBatchSize}\n`);
-    
+
     const detailedProducts = [];
     let successCount = 0;
     let failCount = 0;
-    
+
     for (let i = 0; i < products.length; i++) {
         const product = products[i];
         const progress = `[${i + 1}/${products.length}]`;
-        
+
         console.log(`\n   ${progress} Processing: ${product.title.substring(0, 50)}...`);
-        
+
         const details = await scrapeProductDetail(page, product);
-        
+
         if (details) {
             detailedProducts.push({
                 ...product,
@@ -611,8 +935,7 @@ async function scrapeProductDetails(page, products) {
             });
             failCount++;
         }
-        
-        // Save progress every batch
+
         if (CONFIG.batchDetailScraping && (i + 1) % CONFIG.detailBatchSize === 0) {
             console.log(`\n   💾 Saving progress checkpoint... (${i + 1}/${products.length})`);
             const checkpoint = {
@@ -624,20 +947,19 @@ async function scrapeProductDetails(page, products) {
             };
             fs.writeFileSync('checkpoint_' + CONFIG.outputFile, JSON.stringify(checkpoint, null, 2));
         }
-        
-        // Random delay between requests
+
         if (i < products.length - 1) {
             const delay = 2000 + Math.random() * 2000;
             await new Promise(resolve => setTimeout(resolve, delay));
         }
     }
-    
+
     console.log(`\n${'='.repeat(60)}`);
     console.log(`✅ Detail scraping complete!`);
     console.log(`   Success: ${successCount}/${products.length} (${((successCount/products.length)*100).toFixed(1)}%)`);
     console.log(`   Failed: ${failCount}/${products.length}`);
     console.log(`${'='.repeat(60)}\n`);
-    
+
     return detailedProducts;
 }
 
@@ -645,22 +967,22 @@ async function scrapeProductDetails(page, products) {
 async function hasNextPage(page) {
     return await page.evaluate(() => {
         const nextButton = document.querySelector('.next') ||
-                          document.querySelector('.next-next') ||
-                          document.querySelector('button.next-next') ||
-                          document.querySelector('a[href*="s=44"]') ||
-                          document.querySelector('a[href*="s=88"]') ||
-                          document.querySelector('.icon-btn-next') ||
-                          document.querySelector('[class*="next"]:not([class*="disabled"])');
-        
+            document.querySelector('.next-next') ||
+            document.querySelector('button.next-next') ||
+            document.querySelector('a[href*="s=44"]') ||
+            document.querySelector('a[href*="s=88"]') ||
+            document.querySelector('.icon-btn-next') ||
+            document.querySelector('[class*="next"]:not([class*="disabled"])');
+
         if (!nextButton) return null;
-        
+
         const isDisabled = nextButton.classList.contains('disabled') ||
-                          nextButton.classList.contains('next-disabled') ||
-                          nextButton.hasAttribute('disabled') ||
-                          nextButton.classList.contains('next-pagination-disabled');
-        
+            nextButton.classList.contains('next-disabled') ||
+            nextButton.hasAttribute('disabled') ||
+            nextButton.classList.contains('next-pagination-disabled');
+
         if (isDisabled) return null;
-        
+
         return nextButton.href || true;
     });
 }
@@ -669,34 +991,34 @@ async function hasNextPage(page) {
 async function goToNextPage(page, currentPage) {
     try {
         console.log(`   📄 Navigating to page ${currentPage + 1}...`);
-        
+
         const nextPageInfo = await page.evaluate(() => {
             const nextButton = document.querySelector('.next') ||
-                              document.querySelector('.next-next') ||
-                              document.querySelector('button.next-next') ||
-                              document.querySelector('.icon-btn-next') ||
-                              document.querySelector('[class*="next"]:not([class*="disabled"])');
-            
+                document.querySelector('.next-next') ||
+                document.querySelector('button.next-next') ||
+                document.querySelector('.icon-btn-next') ||
+                document.querySelector('[class*="next"]:not([class*="disabled"])');
+
             if (!nextButton) return null;
-            
+
             const isDisabled = nextButton.classList.contains('disabled') ||
-                              nextButton.classList.contains('next-disabled') ||
-                              nextButton.hasAttribute('disabled');
-            
+                nextButton.classList.contains('next-disabled') ||
+                nextButton.hasAttribute('disabled');
+
             if (isDisabled) return null;
-            
+
             if (nextButton.tagName === 'A' && nextButton.href) {
                 return { type: 'link', url: nextButton.href };
             }
-            
+
             return { type: 'button' };
         });
-        
+
         if (!nextPageInfo) {
             console.log('   ⚠️  No next page available');
             return false;
         }
-        
+
         if (nextPageInfo.type === 'link') {
             await page.goto(nextPageInfo.url, {
                 waitUntil: 'networkidle2',
@@ -705,20 +1027,20 @@ async function goToNextPage(page, currentPage) {
         } else {
             await page.evaluate(() => {
                 const nextButton = document.querySelector('.next') ||
-                                  document.querySelector('.next-next') ||
-                                  document.querySelector('button.next-next') ||
-                                  document.querySelector('.icon-btn-next') ||
-                                  document.querySelector('[class*="next"]:not([class*="disabled"])');
+                    document.querySelector('.next-next') ||
+                    document.querySelector('button.next-next') ||
+                    document.querySelector('.icon-btn-next') ||
+                    document.querySelector('[class*="next"]:not([class*="disabled"])');
                 if (nextButton) nextButton.click();
             });
-            
+
             await page.waitForNavigation({ waitUntil: 'networkidle2', timeout: 30000 });
         }
-        
+
         await new Promise(resolve => setTimeout(resolve, CONFIG.paginationDelay));
         console.log(`   ✅ Loaded page ${currentPage + 1}`);
         return true;
-        
+
     } catch (error) {
         console.log(`   ⚠️  Error navigating to next page: ${error.message}`);
         return false;
@@ -728,8 +1050,8 @@ async function goToNextPage(page, currentPage) {
 // Check if login required
 async function checkLoginRequired(page) {
     const url = page.url();
-    return url.includes('login') || url.includes('verify') || 
-           url.includes('sec.taobao.com') || url.includes('verification');
+    return url.includes('login') || url.includes('verify') ||
+        url.includes('sec.taobao.com') || url.includes('verification');
 }
 
 // Perform search with pagination
@@ -748,7 +1070,7 @@ async function performSearchWithPagination(page, searchInfo) {
 
         if (await checkLoginRequired(page)) {
             console.log(`⚠️  Redirected to login/verification page`);
-            const loginSuccess = await performLogin(page);
+            const loginSuccess = await performAutoLogin(page);
             if (!loginSuccess) {
                 console.log(`❌ Login failed, skipping this search`);
                 return [];
@@ -759,7 +1081,7 @@ async function performSearchWithPagination(page, searchInfo) {
 
         while (currentPage <= CONFIG.maxPagesPerSearch && allProducts.length < CONFIG.maxProductsPerSearch) {
             console.log(`\n   📄 Processing page ${currentPage}/${CONFIG.maxPagesPerSearch}`);
-            
+
             const hasProducts = await waitForProducts(page);
             if (!hasProducts) {
                 console.log(`   ⚠️  No products found on page ${currentPage}`);
@@ -768,7 +1090,7 @@ async function performSearchWithPagination(page, searchInfo) {
 
             await smartScroll(page, CONFIG.maxScrollAttempts);
             const products = await extractProducts(page, searchInfo, currentPage);
-            
+
             console.log(`   ✅ Extracted ${products.length} products from page ${currentPage}`);
             allProducts = allProducts.concat(products);
             console.log(`   📊 Total collected: ${allProducts.length}/${CONFIG.maxProductsPerSearch}`);
@@ -809,12 +1131,13 @@ async function performSearchWithPagination(page, searchInfo) {
 
 // MAIN FUNCTION
 async function main() {
-    console.log('🚀 Starting Taobao Scraper with PAGINATION + DETAIL SCRAPING v4');
+    console.log('🚀 Starting Taobao Scraper with AUTO-LOGIN + PAGINATION + DETAILS v5');
     console.log(`📋 Strategy: Search using ${SEARCH_KEYWORDS.length} keywords with pagination`);
     console.log(`📄 Max pages per search: ${CONFIG.maxPagesPerSearch}`);
     console.log(`🎯 Max products per search: ${CONFIG.maxProductsPerSearch}`);
     console.log(`🎯 Target total: ${CONFIG.maxProductsTotal} products`);
-    console.log(`📝 Detail scraping: ${CONFIG.scrapeDetailPages ? 'ENABLED' : 'DISABLED'}\n`);
+    console.log(`📝 Detail scraping: ${CONFIG.scrapeDetailPages ? 'ENABLED' : 'DISABLED'}`);
+    console.log(`🔐 Auto-login: ${CONFIG.autoLoginEnabled ? 'ENABLED' : 'DISABLED'}\n`);
 
     let browser;
     let allProducts = [];
@@ -832,17 +1155,25 @@ async function main() {
 
         const cookiesLoaded = await loadCookies(page);
 
-        if (!cookiesLoaded) {
+        if (cookiesLoaded) {
+            console.log('✅ Cookies loaded, checking login status...');
+            const loggedIn = await isLoggedIn(page);
+
+            if (!loggedIn) {
+                console.log('⚠️  Cookies invalid, attempting fresh login...');
+                const loginSuccess = await performAutoLogin(page);
+                if (!loginSuccess) {
+                    console.log('⚠️  Login failed, continuing anyway...');
+                }
+            }
+        } else {
             console.log('\n📝 No cookies found, attempting to login...');
-            const loginSuccess = await performLogin(page);
+            const loginSuccess = await performAutoLogin(page);
             if (!loginSuccess) {
                 console.log('⚠️  Login failed, continuing anyway...');
             }
-        } else {
-            console.log('✅ Using existing cookies');
         }
 
-        // Perform searches with pagination
         for (let i = 0; i < SEARCH_KEYWORDS.length; i++) {
             const searchInfo = SEARCH_KEYWORDS[i];
             const products = await performSearchWithPagination(page, searchInfo);
@@ -862,7 +1193,6 @@ async function main() {
             }
         }
 
-        // Deduplication by Item ID
         console.log(`\n${'='.repeat(60)}`);
         console.log(`🔄 DEDUPLICATION (by Item ID)`);
         console.log(`${'='.repeat(60)}\n`);
@@ -889,13 +1219,11 @@ async function main() {
         console.log(`   Duplicates removed: ${allProducts.length - uniqueProducts.length}`);
 
         let finalProducts = uniqueProducts.slice(0, CONFIG.maxProductsTotal);
-        
-        // Scrape detail pages if enabled
+
         if (CONFIG.scrapeDetailPages) {
             finalProducts = await scrapeProductDetails(page, finalProducts);
         }
 
-        // Statistics
         const categoryStats = {};
         const keywordStats = {};
         const pageStats = {};
@@ -911,7 +1239,6 @@ async function main() {
             if (p.detailsScraped) detailsScrapedCount++;
         });
 
-        // Save results
         const data = {
             totalProducts: finalProducts.length,
             productsWithDetails: detailsScrapedCount,
